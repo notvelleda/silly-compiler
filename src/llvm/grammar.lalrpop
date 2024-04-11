@@ -1,0 +1,63 @@
+use std::str::FromStr;
+use crate::types::{AddressSpace, FloatingPointKind, TargetExtensionParameter};
+
+grammar;
+
+StringLiteral: String = <s:r#"\"[^"]*\""#> => super::parse_escape_sequences(&s[1..s.len() - 1]);
+
+pub Identifier: String = {
+    r"[%@][\\\-a-zA-Z$._][\\\-a-zA-Z$._0-9]*" => super::parse_escape_sequences(<>),
+    r"[%@][0-9]+" => <>.to_string(),
+    <s:r"[%@]"> <l:StringLiteral> => format!("{s}{l}"),
+};
+
+TypeList: Vec<crate::types::Type> = {
+    Type => vec![<>],
+    <mut l:TypeList> r"\s*,\s*" <t:Type> => {
+        l.push(t);
+        l
+    }
+};
+
+TargetExtensionParameterList: Vec<TargetExtensionParameter> = {
+    Type => vec![TargetExtensionParameter::Type(<>)],
+    r"[0-9]+" => vec![TargetExtensionParameter::Integer(usize::from_str(<>).unwrap())],
+    <mut l:TargetExtensionParameterList> r"\s*,\s*" <t:Type> => {
+        l.push(TargetExtensionParameter::Type(t));
+        l
+    },
+    <mut l:TargetExtensionParameterList> r"\s*,\s*" <n:r"[0-9]+"> => {
+        l.push(TargetExtensionParameter::Integer(usize::from_str(n).unwrap()));
+        l
+    },
+};
+
+pub Type: crate::types::Type = {
+    "void" => crate::types::Type::Void,
+    "i" <n:r"[0-9]+"> => crate::types::Type::Integer { bit_width: usize::from_str(n).unwrap() },
+    <t:Type> r"\s*\(\s*" <l:TypeList> r"\s*\)" => crate::types::Type::Function { return_type: Box::new(t), parameters: l, has_varargs: false },
+    <t:Type> r"\s*\(\s*" <l:TypeList> r"\s*,\s*\.\.\.\s*\)" => crate::types::Type::Function { return_type: Box::new(t), parameters: l, has_varargs: true },
+    "half" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary16 },
+    "bfloat" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Brain },
+    "float" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary32 },
+    "double" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary64 },
+    "fp128" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary128 },
+    "x86_fp80" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::X86Fp80 },
+    "ppc_fp128" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::PpcFp128 },
+    "x86_amx" => crate::types::Type::AMX,
+    "x86_mmx" => crate::types::Type::MMX,
+    "ptr" => crate::types::Type::Pointer { address_space: AddressSpace::Numbered(0) },
+    r"ptr\s+addrspace\(\s*" <r"[0-9]+"> r"\s*\)" => crate::types::Type::Pointer { address_space: AddressSpace::Numbered(usize::from_str(<>).unwrap()) },
+    r"ptr\s+addrspace\(\s*" <StringLiteral> r"\s*\)" => crate::types::Type::Pointer { address_space: AddressSpace::Named(<>) },
+    r"target\s*\(\s*" <StringLiteral> r"\s*\)" => crate::types::Type::TargetExtension { name: <>, parameters: vec![] },
+    r"target\s*\(\s*" <n:StringLiteral> r"\s*,\s*" <l:TargetExtensionParameterList> r"\s*\)" => crate::types::Type::TargetExtension { name: n, parameters: l },
+    r"<\s*" <n:r"[0-9]+"> r"\s+x\s+" <t:Type> r"\s*>" => crate::types::Type::Vector { length: usize::from_str(n).unwrap(), element_type: Box::new(t), is_scalable: false },
+    r"<\s*vscale\s+x\s+" <n:r"[0-9]+"> r"\s+x\s+" <t:Type> r"\s*>" => crate::types::Type::Vector { length: usize::from_str(n).unwrap(), element_type: Box::new(t), is_scalable: true },
+    "label" => crate::types::Type::Label,
+    "token" => crate::types::Type::Token,
+    "metadata" => crate::types::Type::Metadata,
+    r"\[\s*" <n:r"[0-9]+"> r"\s+x\s+" <t:Type> r"\s*\]" => crate::types::Type::Array { length: usize::from_str(n).unwrap(), element_type: Box::new(t) },
+    r"\{\s*" <TypeList> r"\s*\}" => crate::types::Type::Structure { types: <>, is_packed: false },
+    r"<\{\s*" <TypeList> r"\s*\}>" => crate::types::Type::Structure { types: <>, is_packed: true },
+    "opaque" => crate::types::Type::OpaqueStructure,
+};
