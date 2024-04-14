@@ -1,6 +1,7 @@
 use lalrpop_util::lalrpop_mod;
 
 lalrpop_mod!(pub grammar, "/llvm/grammar.rs");
+pub mod ir;
 
 pub fn parse_escape_sequences(s: &str) -> String {
     // TODO
@@ -30,19 +31,19 @@ fn type_parsing() {
     assert!(
         grammar::TypeParser::new().parse("ptr")
             == Ok(Type::Pointer {
-                address_space: AddressSpace::Numbered(0)
+                address_space: AddressSpace::Numbered(0),
             })
     );
     assert!(
         grammar::TypeParser::new().parse("ptr addrspace(621)")
             == Ok(Type::Pointer {
-                address_space: AddressSpace::Numbered(621)
+                address_space: AddressSpace::Numbered(621),
             })
     );
     assert!(
         grammar::TypeParser::new().parse(r#"ptr addrspace("UwU")"#)
             == Ok(Type::Pointer {
-                address_space: AddressSpace::Named("UwU".to_string())
+                address_space: AddressSpace::Named("UwU".to_string()),
             })
     );
 
@@ -50,28 +51,28 @@ fn type_parsing() {
         grammar::TypeParser::new().parse(r#"target("label")"#)
             == Ok(Type::TargetExtension {
                 name: "label".to_string(),
-                parameters: vec![]
+                parameters: vec![],
             })
     );
     assert!(
         grammar::TypeParser::new().parse(r#"target("label", void)"#)
             == Ok(Type::TargetExtension {
                 name: "label".to_string(),
-                parameters: vec![TargetExtensionParameter::Type(Type::Void)]
+                parameters: vec![TargetExtensionParameter::Type(Type::Void)],
             })
     );
     assert!(
         grammar::TypeParser::new().parse(r#"target("label", void, i32)"#)
             == Ok(Type::TargetExtension {
                 name: "label".to_string(),
-                parameters: vec![TargetExtensionParameter::Type(Type::Void), TargetExtensionParameter::Type(Type::Integer { bit_width: 32 }),]
+                parameters: vec![TargetExtensionParameter::Type(Type::Void), TargetExtensionParameter::Type(Type::Integer { bit_width: 32 })],
             })
     );
     assert!(
         grammar::TypeParser::new().parse(r#"target("label", 0, 1, 2)"#)
             == Ok(Type::TargetExtension {
                 name: "label".to_string(),
-                parameters: vec![TargetExtensionParameter::Integer(0), TargetExtensionParameter::Integer(1), TargetExtensionParameter::Integer(2),]
+                parameters: vec![TargetExtensionParameter::Integer(0), TargetExtensionParameter::Integer(1), TargetExtensionParameter::Integer(2)],
             })
     );
     assert!(
@@ -84,7 +85,7 @@ fn type_parsing() {
                     TargetExtensionParameter::Integer(0),
                     TargetExtensionParameter::Integer(1),
                     TargetExtensionParameter::Integer(2),
-                ]
+                ],
             })
     );
 
@@ -117,7 +118,7 @@ fn type_parsing() {
             == Ok(Type::Vector {
                 length: 4,
                 element_type: Box::new(Type::Pointer {
-                    address_space: AddressSpace::Numbered(0)
+                    address_space: AddressSpace::Numbered(0),
                 }),
                 is_scalable: false,
             })
@@ -193,7 +194,7 @@ fn type_parsing() {
     assert!(
         grammar::TypeParser::new().parse("{ i32, i32, i32 }")
             == Ok(Type::Structure {
-                types: vec![Type::Integer { bit_width: 32 }, Type::Integer { bit_width: 32 }, Type::Integer { bit_width: 32 },],
+                types: vec![Type::Integer { bit_width: 32 }, Type::Integer { bit_width: 32 }, Type::Integer { bit_width: 32 }],
                 is_packed: false,
             })
     );
@@ -201,16 +202,46 @@ fn type_parsing() {
         grammar::TypeParser::new().parse("{ float, ptr }")
             == Ok(Type::Structure {
                 types: vec![Type::FloatingPoint { kind: FloatingPointKind::Binary32 }, Type::Pointer {
-                    address_space: AddressSpace::Numbered(0)
-                },],
+                    address_space: AddressSpace::Numbered(0),
+                }],
                 is_packed: false,
             })
     );
     assert!(
         grammar::TypeParser::new().parse("<{ i8, i32 }>")
             == Ok(Type::Structure {
-                types: vec![Type::Integer { bit_width: 8 }, Type::Integer { bit_width: 32 },],
+                types: vec![Type::Integer { bit_width: 8 }, Type::Integer { bit_width: 32 }],
                 is_packed: true,
+            })
+    );
+
+    assert!(
+        grammar::TypeParser::new().parse("i32 (i32)")
+            == Ok(Type::Function {
+                return_type: Box::new(Type::Integer { bit_width: 32 }),
+                parameters: vec![Type::Integer { bit_width: 32 }],
+                has_varargs: false,
+            })
+    );
+    assert!(
+        grammar::TypeParser::new().parse("i32 (ptr, ...)")
+            == Ok(Type::Function {
+                return_type: Box::new(Type::Integer { bit_width: 32 }),
+                parameters: vec![Type::Pointer {
+                    address_space: AddressSpace::Numbered(0),
+                }],
+                has_varargs: true,
+            })
+    );
+    assert!(
+        grammar::TypeParser::new().parse("{i32, i32} (i32)")
+            == Ok(Type::Function {
+                return_type: Box::new(Type::Structure {
+                    types: vec![Type::Integer { bit_width: 32 }, Type::Integer { bit_width: 32 }],
+                    is_packed: false,
+                }),
+                parameters: vec![Type::Integer { bit_width: 32 }],
+                has_varargs: false,
             })
     );
 }
