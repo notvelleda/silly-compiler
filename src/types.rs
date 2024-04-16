@@ -136,3 +136,96 @@ impl Type {
         )
     }
 }
+
+/// LLVM parameter attributes (https://llvm.org/docs/LangRef.html#paramattrs)
+#[derive(Debug, Clone)]
+pub enum ParameterAttribute {
+    /// indicates that the parameter or return value should be zero-extended as required.
+    /// corresponds to LLVM's `zeroext` parameter attribute
+    ZeroExtend,
+    /// indicates that the parameter or return value should be sign-extended as required.
+    /// corresponds to LLVM's `signext` parameter attribute
+    SignExtend,
+    /// this depends on the target, but is apparently usually used to specify that a parameter or return value should be placed in a register instead of memory.
+    /// corresponds to LLVM's `inreg` parameter attribute
+    TargetDependent,
+    /// indicates that a parameter should be copied in order to be effectively passed by value, and that changes made to this copy will not affect the original.
+    /// corresponds to LLVM's `byval` parameter attribute
+    PassByValue(Type),
+    /// indicates that a parameter should be specifically passed by reference, instead of letting the code generator do whatever it wants.
+    /// corresponds to LLVM's `byref` parameter attribute
+    PassByReference(Type),
+    /// indicates that a parameter has been copied in order to be effectively passed by value.
+    /// corresponds to LLVM's `preallocated` parameter attribute
+    PreAllocated(Type),
+    /// indicates that a parameter was the last thing allocated on the stack, and can be deallocated by the callee.
+    /// corresponds to LLVM's `inalloca` parameter attribute
+    StackAllocated(Type),
+    /// specifies that this parameter is a pointer to a structure that is the return value of this function.
+    /// corresponds to LLVM's `sret` parameter attribute
+    ReturnStructure(Type),
+    // TODO: elementtype
+    /// specifies the alignment of the parameter if it's a pointer or vector of pointers.
+    /// corresponds to LLVM's `align` parameter attribute
+    Alignment(usize),
+    /// corresponds to LLVM's `noalias` parameter attribute
+    NoAlias,
+    /// corresponds to LLVM's `nocapture` parameter attribute
+    NoCapture,
+    /// indicates that the parameter will not be freed by the callee.
+    /// corresponds to LLVM's `nofree` parameter attribute
+    NoFree,
+    /// corresponds to LLVM's `nest` parameter attribute
+    Nest,
+    /// indicates that this parameter will always be returned by the function.
+    /// corresponds to LLVM's `returned` parameter attribute
+    Returned,
+    /// indicates that this parameter is not a null pointer, but is not checked or enforced.
+    /// corresponds to LLVM's `nonnull` parameter attribute
+    NonNull,
+    /// indicates that this parameter can be dereferenced, and that the given number of bytes can be safely dereferenced without risk of exceptions.
+    /// corresponds to LLVM's `dereferenceable` parameter attribute
+    Dereferenceable(usize),
+    /// like `Dereferenceable`, except this pointer can also be null.
+    /// corresponds to LLVM's `dereferenceable_or_null` parameter attribute
+    DereferenceableOrNull(usize),
+    /// indicates that this parameter is the object or context that this function is associated with/
+    /// corresponds to LLVM's `swiftself` parameter attribute
+    Context,
+    /// corresponds to LLVM's `swiftasync` parameter attribute
+    SwiftAsync,
+    /// corresponds to LLVM's `swifterror` parameter attribute
+    SwiftError,
+    /// specifies that this parameter must be an immediate value.
+    /// corresponds to LLVM's `immarg` parameter attribute
+    Immediate,
+    /// specifies that this parameter shouldn't contain undefined or poison bits.
+    /// corresponds to LLVM's `noundef` parameter attribute
+    NoUndefined,
+    // TODO: nofpclass
+    /// specifies the preferred alignment for if this parameter is allocated stack space.
+    /// corresponds to LLVM's `alignstack` parameter attribute
+    StackAlignment(usize),
+    /// specifies that this parameter refers to the minimum alignment of the pointer returned from a memory allocator function,
+    /// where this function can return either a pointer aligned to at least the value of this argument or a null pointer.
+    /// corresponds to LLVM's `allocalign` parameter attribute
+    AllocationAlignment,
+    // TODO: allocptr (what does it mean? does the pointer have to be invalidated, or does it just mean it'll be fucked with? how would this help with optimization at all?)
+    /// specifies that this parameter will not be directly dereferenced (though the memory it points to could still be modified).
+    /// corresponds to LLVM's `readnone` parameter attribute
+    NoDereference,
+    /// specifies that this parameter will not be directly dereferenced for write operations, though the memory it points to could still be modified by other pointers.
+    /// corresponds to LLVM's `readonly` parameter attribute
+    ReadOnly,
+    // TODO: writeonly, writable
+    /// specifies that this parameter will be poisoned (or the value pointed to by this parameter) if the function call unwinds.
+    /// corresponds to LLVM's `dead_on_unwind` parameter attribute
+    PoisonOnUnwind,
+    /// specifies the possible range of this integer or integer vector parameter.
+    /// corresponds to LLVM's `range` parameter attribute
+    Range {
+        range_type: Type,
+        low_inclusive: Vec<usize>,
+        high_exclusive: Vec<usize>,
+    },
+}

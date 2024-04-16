@@ -1,6 +1,9 @@
-use std::str::FromStr;
-use crate::types::{AddressSpace, FloatingPointKind, TargetExtensionParameter};
-use super::ir;
+use std::{str::FromStr, sync::Arc};
+use crate::{
+    ir::{AllowedWrapping, Constant, GetPointerKind, Instruction, IntegerComparison, Ordering, SwitchDestination, TailCallHint, Terminator, Value},
+    types::{AddressSpace, FloatingPointKind, ParameterAttribute, TargetExtensionParameter, Type},
+};
+use super::DualValue;
 
 grammar;
 
@@ -12,87 +15,100 @@ pub Identifier: String = {
     <s:r"[%@]"> <l:StringLiteral> => format!("{s}{l}"),
 };
 
-TypeList: Vec<crate::types::Type> = {
+TypeList: Vec<Type> = {
     Type => vec![<>],
-    <mut l:TypeList> r"\s*,\s*" <t:Type> => {
+    <mut l:TypeList> "," <t:Type> => {
         l.push(t);
         l
     }
 };
 
+UnsignedBase10Int: usize = r"[0-9]+" => usize::from_str(<>).unwrap();
+
 TargetExtensionParameterList: Vec<TargetExtensionParameter> = {
     Type => vec![TargetExtensionParameter::Type(<>)],
-    r"[0-9]+" => vec![TargetExtensionParameter::Integer(usize::from_str(<>).unwrap())],
-    <mut l:TargetExtensionParameterList> r"\s*,\s*" <t:Type> => {
+    <UnsignedBase10Int> => vec![TargetExtensionParameter::Integer(<>)],
+    <mut l:TargetExtensionParameterList> "," <t:Type> => {
         l.push(TargetExtensionParameter::Type(t));
         l
     },
-    <mut l:TargetExtensionParameterList> r"\s*,\s*" <n:r"[0-9]+"> => {
-        l.push(TargetExtensionParameter::Integer(usize::from_str(n).unwrap()));
+    <mut l:TargetExtensionParameterList> "," <n:UnsignedBase10Int> => {
+        l.push(TargetExtensionParameter::Integer(n));
         l
     },
 };
 
-pub IntegerType: crate::types::Type = "i" <r"[0-9]+"> => crate::types::Type::Integer { bit_width: usize::from_str(<>).unwrap() };
-
-pub Type: crate::types::Type = {
-    "void" => crate::types::Type::Void,
-    <IntegerType>,
-    <t:Type> r"\s*\(\s*" <l:TypeList> r"\s*\)" => crate::types::Type::Function { return_type: Box::new(t), parameters: l, has_varargs: false },
-    <t:Type> r"\s*\(\s*" <l:TypeList> r"\s*,\s*\.\.\.\s*\)" => crate::types::Type::Function { return_type: Box::new(t), parameters: l, has_varargs: true },
-    "half" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary16 },
-    "bfloat" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Brain },
-    "float" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary32 },
-    "double" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary64 },
-    "fp128" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::Binary128 },
-    "x86_fp80" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::X86Fp80 },
-    "ppc_fp128" => crate::types::Type::FloatingPoint { kind: FloatingPointKind::PpcFp128 },
-    "x86_amx" => crate::types::Type::AMX,
-    "x86_mmx" => crate::types::Type::MMX,
-    "ptr" => crate::types::Type::Pointer { address_space: AddressSpace::Numbered(0) },
-    r"ptr\s+addrspace\(\s*" <r"[0-9]+"> r"\s*\)" => crate::types::Type::Pointer { address_space: AddressSpace::Numbered(usize::from_str(<>).unwrap()) },
-    r"ptr\s+addrspace\(\s*" <StringLiteral> r"\s*\)" => crate::types::Type::Pointer { address_space: AddressSpace::Named(<>) },
-    r"target\s*\(\s*" <StringLiteral> r"\s*\)" => crate::types::Type::TargetExtension { name: <>, parameters: vec![] },
-    r"target\s*\(\s*" <n:StringLiteral> r"\s*,\s*" <l:TargetExtensionParameterList> r"\s*\)" => crate::types::Type::TargetExtension { name: n, parameters: l },
-    r"<\s*" <n:r"[0-9]+"> r"\s+x\s+" <t:Type> r"\s*>" => crate::types::Type::Vector { length: usize::from_str(n).unwrap(), element_type: Box::new(t), is_scalable: false },
-    r"<\s*vscale\s+x\s+" <n:r"[0-9]+"> r"\s+x\s+" <t:Type> r"\s*>" => crate::types::Type::Vector { length: usize::from_str(n).unwrap(), element_type: Box::new(t), is_scalable: true },
-    "label" => crate::types::Type::Label,
-    "token" => crate::types::Type::Token,
-    "metadata" => crate::types::Type::Metadata,
-    r"\[\s*" <n:r"[0-9]+"> r"\s+x\s+" <t:Type> r"\s*\]" => crate::types::Type::Array { length: usize::from_str(n).unwrap(), element_type: Box::new(t) },
-    r"\{\s*" <TypeList> r"\s*\}" => crate::types::Type::Structure { types: <>, is_packed: false },
-    r"<\{\s*" <TypeList> r"\s*\}>" => crate::types::Type::Structure { types: <>, is_packed: true },
-    "opaque" => crate::types::Type::OpaqueStructure,
+AddressSpace: AddressSpace = {
+    "addrspace(" <UnsignedBase10Int> ")" => AddressSpace::Numbered(<>),
+    "addrspace(" <StringLiteral> ")" => AddressSpace::Named(<>),
 };
 
-pub Constant: ir::Constant = {
-    "true" => ir::Constant::Boolean(true),
-    "false" => ir::Constant::Boolean(false),
+pub Type: Type = {
+    "void" => Type::Void,
+    <r"i[0-9]+"> => Type::Integer { bit_width: usize::from_str(&<>[1..]).unwrap() },
+    <t:Type> "(" <l:TypeList> ")" => Type::Function { return_type: Box::new(t), parameters: l, has_varargs: false },
+    <t:Type> "(" <l:TypeList> "," "..." ")" => Type::Function { return_type: Box::new(t), parameters: l, has_varargs: true },
+    "half" => Type::FloatingPoint { kind: FloatingPointKind::Binary16 },
+    "bfloat" => Type::FloatingPoint { kind: FloatingPointKind::Brain },
+    "float" => Type::FloatingPoint { kind: FloatingPointKind::Binary32 },
+    "double" => Type::FloatingPoint { kind: FloatingPointKind::Binary64 },
+    "fp128" => Type::FloatingPoint { kind: FloatingPointKind::Binary128 },
+    "x86_fp80" => Type::FloatingPoint { kind: FloatingPointKind::X86Fp80 },
+    "ppc_fp128" => Type::FloatingPoint { kind: FloatingPointKind::PpcFp128 },
+    "x86_amx" => Type::AMX,
+    "x86_mmx" => Type::MMX,
+    "ptr" => Type::Pointer { address_space: AddressSpace::Numbered(0) },
+    r"ptr\s+" <AddressSpace> => Type::Pointer { address_space: <> },
+    "target" "(" <StringLiteral> ")" => Type::TargetExtension { name: <>, parameters: vec![] },
+    "target" "(" <n:StringLiteral> "," <l:TargetExtensionParameterList> ")" => Type::TargetExtension { name: n, parameters: l },
+    "<" <n:UnsignedBase10Int> r"\s+x\s+" <t:Type> ">" => Type::Vector { length: n, element_type: Box::new(t), is_scalable: false },
+    "<" r"vscale\s+x\s+" <n:UnsignedBase10Int> r"\s+x\s+" <t:Type> ">" => Type::Vector { length: n, element_type: Box::new(t), is_scalable: true },
+    "label" => Type::Label,
+    "token" => Type::Token,
+    "metadata" => Type::Metadata,
+    "[" <n:UnsignedBase10Int> r"\s+x\s+" <t:Type> "]" => Type::Array { length: n, element_type: Box::new(t) },
+    "{" <TypeList> "}" => Type::Structure { types: <>, is_packed: false },
+    "<{" <TypeList> "}>" => Type::Structure { types: <>, is_packed: true },
+    "opaque" => Type::OpaqueStructure,
+};
+
+Constant: Constant = {
+    "true" => Constant::Boolean(true),
+    "false" => Constant::Boolean(false),
     // TODO: support integer constants larger than host's pointer size
-    r"[0-9]+" => ir::Constant::Integer(usize::from_str(<>).unwrap()),
-    r"-[0-9]+" => ir::Constant::Integer(isize::from_str(<>).unwrap() as usize),
-    r"u0x[0-9a-fA-F]+" => ir::Constant::Integer(usize::from_str_radix(&<>[1..], 16).unwrap()),
+    r"[0-9]+" => Constant::Integer(usize::from_str(<>).unwrap()),
+    r"-[0-9]+" => Constant::Integer(isize::from_str(<>).unwrap() as usize),
+    r"u0x[0-9a-fA-F]+" => Constant::Integer(usize::from_str_radix(&<>[1..], 16).unwrap()),
     // TODO: floating point constants
-    "null" => ir::Constant::NullPointer,
-    "none" => ir::Constant::NoneToken,
-    r"\{\s*" <ValueList> r"\s*\}" => ir::Constant::Structure(<>),
-    r"\[\s*" <ValueList> r"\s*\]" => ir::Constant::Array(<>),
-    r"<\s*" <ValueList> r"\s*>" => ir::Constant::Vector(<>),
-    "zeroinitializer" => ir::Constant::Zero,
-    MetadataNode => ir::Constant::Metadata,
-    "poison" => ir::Constant::Poison,
+    "null" => Constant::NullPointer,
+    "none" => Constant::NoneToken,
+    "{" <ValueList> "}" => Constant::Structure(<>),
+    "[" <ValueList> "]" => Constant::Array(<>),
+    "<" <ValueList> ">" => Constant::Vector(<>),
+    "zeroinitializer" => Constant::Zero,
+    MetadataNode => Constant::Metadata,
+    "poison" => Constant::Poison,
     // TODO: constant expressions
 };
 
-pub Value: ir::Value = {
-    "void" => ir::Value::Constant(crate::types::Type::Void, ir::Constant::Void),
-    <Type> r"\s+" <Identifier> => ir::Value::Identifier(<>),
-    <Type> r"\s+" <Constant> => ir::Value::from_type_constant(<>),
+pub Value: Arc<Value> = {
+    "void" => (Value::FromConstant { constant_type: Type::Void, constant: Constant::Void }).into(),
+    <t:Type> r"\s+" <i:Identifier> => (Value::FromIdentifier { value_type: t, identifier: i }).into(),
+    <Type> r"\s+" <Constant> => Value::from_type_constant(<>).into(),
 };
 
-ValueList: Vec<ir::Value> = {
+pub DualValue: DualValue = {
+    <t:Type> r"\s+" <i:Identifier> "," <i2:Identifier> => [(Value::FromIdentifier { value_type: t.clone(), identifier: i }).into(), (Value::FromIdentifier { value_type: t, identifier: i2 }).into()],
+    <t:Type> r"\s+" <i:Identifier> "," <c:Constant> => [(Value::FromIdentifier { value_type: t.clone(), identifier: i }).into(), Value::from_type_constant(t, c).into()],
+    <t:Type> r"\s+" <c:Constant> "," <i:Identifier> => [Value::from_type_constant(t.clone(), c).into(), (Value::FromIdentifier { value_type: t, identifier: i }).into()],
+    <t:Type> r"\s+" <c:Constant> "," <c2:Constant> => [Value::from_type_constant(t.clone(), c).into(), Value::from_type_constant(t, c2).into()],
+};
+
+pub LabelValue: Arc<Value> = r"label\s+" <Identifier> => (Value::FromIdentifier { value_type: Type::Label, identifier: <> }).into();
+
+ValueList: Vec<Arc<Value>> = {
     <Value> => vec![<>],
-    <mut l:ValueList> r"\s*,\s*" <v:Value> => {
+    <mut l:ValueList> "," <v:Value> => {
         l.push(v);
         l
     }
@@ -101,13 +117,237 @@ ValueList: Vec<ir::Value> = {
 MetadataItem: () = {
     Value,
     r"![0-9]+",
-    "!" StringLiteral,
+    r#"!\"[^"]*\""#,
     MetadataNode,
 };
 
 MetadataList = {
     MetadataItem,
-    MetadataList r"\s*,\s*" MetadataItem,
+    MetadataList "," MetadataItem,
 };
 
-MetadataNode = r"!\{\s*" MetadataList r"\s*\}";
+MetadataNode = "!{" MetadataList "}";
+
+SwitchDestination: SwitchDestination = <v:Value> "," <d:LabelValue> => SwitchDestination { value: v, destination: d };
+
+SwitchDestinationList: Vec<SwitchDestination> = {
+    <SwitchDestination> => vec![<>],
+    <mut l:SwitchDestinationList> r"\s+" <d:SwitchDestination> => {
+        l.push(d);
+        l
+    },
+};
+
+BranchDestinationList: Vec<Arc<Value>> = {
+    <LabelValue> => vec![<>],
+    <mut l:BranchDestinationList> "," <v:LabelValue> => {
+        l.push(v);
+        l
+    },
+};
+
+pub Terminator: Terminator = {
+    r"ret\s+" <Value> => Terminator::Return { value: <> },
+    r"br\s+" <c:Value> "," <t:LabelValue> "," <f:LabelValue> => Terminator::ConditionalBranch { condition: c, if_true: t, if_false: f },
+    r"br\s+" <LabelValue> => Terminator::Branch { destination: <> },
+    r"switch\s+" <v:Value> "," <d:LabelValue> "[" <l:SwitchDestinationList> "]" => Terminator::Switch { value: v, default_destination: d, destinations: l },
+    r"indirectbr\s+" <a:Value> "," "[" <l:BranchDestinationList> "]" => Terminator::IndirectBranch { address: a, valid_destinations: l },
+    // TODO: invoke, callbr, resume, catchswitch, catchpad, cleanupret
+    "unreachable" => Terminator::Unreachable,
+};
+
+Alignment: usize = {
+    r"align\s+" <UnsignedBase10Int>,
+    "align(" <UnsignedBase10Int> ")",
+};
+
+pub ParameterAttribute: ParameterAttribute = {
+    "zeroext" => ParameterAttribute::ZeroExtend,
+    "signext" => ParameterAttribute::SignExtend,
+    "inreg" => ParameterAttribute::TargetDependent,
+    "byval(" <Type> ")" => ParameterAttribute::PassByValue(<>),
+    "byref(" <Type> ")" => ParameterAttribute::PassByReference(<>),
+    "preallocated(" <Type> ")" => ParameterAttribute::PreAllocated(<>),
+    "inalloca(" <Type> ")" => ParameterAttribute::StackAllocated(<>),
+    "sret(" <Type> ")" => ParameterAttribute::ReturnStructure(<>),
+    //"elementtype(" <Type> ")" => ParameterAttribute::
+    <Alignment> => ParameterAttribute::Alignment(<>),
+    "noalias" => ParameterAttribute::NoAlias,
+    "nocapture" => ParameterAttribute::NoCapture,
+    "nofree" => ParameterAttribute::NoFree,
+    "nest" => ParameterAttribute::Nest,
+    "returned" => ParameterAttribute::Returned,
+    "nonnull" => ParameterAttribute::NonNull,
+    "dereferenceable(" <UnsignedBase10Int> ")" => ParameterAttribute::Dereferenceable(<>),
+    "dereferenceable_or_null(" <UnsignedBase10Int> ")" => ParameterAttribute::DereferenceableOrNull(<>),
+    "swiftself" => ParameterAttribute::Context,
+    "swiftasync" => ParameterAttribute::SwiftAsync,
+    "swifterror" => ParameterAttribute::SwiftError,
+    "immarg" => ParameterAttribute::Immediate,
+    "noundef" => ParameterAttribute::NoUndefined,
+    // TODO: nofpclass
+    "alignstack(" <UnsignedBase10Int> ")" => ParameterAttribute::StackAlignment(<>),
+    "allocalign" => ParameterAttribute::AllocationAlignment,
+    // TODO: allocptr
+    "readnone" => ParameterAttribute::NoDereference,
+    "readonly" => ParameterAttribute::ReadOnly,
+    // TODO: writeonly
+    // TODO: writeable
+    "dead_on_unwind" => ParameterAttribute::PoisonOnUnwind,
+    //"range(" <Type> <Constant> "," <Constant> ")"
+};
+
+pub ParameterAttributeList: Vec<ParameterAttribute> = {
+    <ParameterAttribute> => vec![<>],
+    <mut l:ParameterAttributeList> "," <a:ParameterAttribute> => {
+        l.push(a);
+        l
+    },
+};
+
+AllowedWrapping: AllowedWrapping = {
+    "" => AllowedWrapping { can_wrap_unsigned: true, can_wrap_signed: true },
+    r"nuw\s+" => AllowedWrapping { can_wrap_unsigned: false, can_wrap_signed: true },
+    r"nsw\s+" => AllowedWrapping { can_wrap_unsigned: true, can_wrap_signed: false },
+    r"nuw\s+nsw\s+" => AllowedWrapping { can_wrap_unsigned: false, can_wrap_signed: false },
+};
+
+IsExact: bool = {
+    "" => false,
+    r"exact\s+" => true,
+};
+
+ConstantIndexList: Vec<usize> = {
+    <UnsignedBase10Int> => vec![<>],
+    <mut l:ConstantIndexList> "," <n:UnsignedBase10Int> => {
+        l.push(n);
+        l
+    },
+};
+
+OptionalNumElements: Option<Arc<Value>> = {
+    "" => None,
+    "," <Value> => Some(<>),
+};
+
+OptionalAlignment: Option<usize> = {
+    "" => None,
+    "," <Alignment> => Some(<>),
+};
+
+OptionalAddressSpace: Option<AddressSpace> = {
+    "" => None,
+    "," <AddressSpace> => Some(<>),
+};
+
+OptionalAddressSpace2: Option<AddressSpace> = {
+    "" => None,
+    <AddressSpace> r"\s+" => Some(<>),
+};
+
+OptionalVolatile: bool = {
+    "" => false,
+    r"volatile\s+" => true,
+};
+
+OptionalSyncScope: Option<String> = {
+    "" => None,
+    "syncscope(" <StringLiteral> ")" => Some(<>),
+};
+
+Ordering: Ordering = {
+    "unordered" => Ordering::Unordered,
+    "monotonic" => Ordering::Monotonic,
+    "acquire" => Ordering::Acquire,
+    "release" => Ordering::Release,
+    "acq_rel" => Ordering::AcquireRelease,
+    "seq_cst" => Ordering::SequentiallyConsistent,
+};
+
+IntegerComparison: IntegerComparison = {
+    "eq" => IntegerComparison::Equal,
+    "ne" => IntegerComparison::NotEqual,
+    "ugt" => IntegerComparison::UnsignedGreaterThan,
+    "uge" => IntegerComparison::UnsignedGreaterOrEqual,
+    "ult" => IntegerComparison::UnsignedLessThan,
+    "ule" => IntegerComparison::UnsignedLessOrEqual,
+    "sgt" => IntegerComparison::SignedGreaterThan,
+    "sge" => IntegerComparison::SignedGreaterOrEqual,
+    "slt" => IntegerComparison::SignedLessThan,
+    "sle" => IntegerComparison::SignedLessOrEqual,
+};
+
+TailCallHint: TailCallHint = {
+    "" => TailCallHint::Indifferent,
+    r"tail\s+" => TailCallHint::ShouldTail,
+    r"musttail\s+" => TailCallHint::MustTail,
+    r"notail\s+" => TailCallHint::NeverTail,
+};
+
+OptionalParameterAttributes: Vec<ParameterAttribute> = {
+    "" => vec![],
+    <ParameterAttributeList> r"\s+",
+};
+
+GetPointerKind: GetPointerKind = {
+    "" => GetPointerKind::Regular,
+    r"inbounds\s+" => GetPointerKind::InBounds,
+    "inrange(" <s:UnsignedBase10Int> "," <e:UnsignedBase10Int> r"\)\s+" => GetPointerKind::InRange(s, e),
+};
+
+pub Instruction: Instruction = {
+    // TODO: fneg
+    r"add\s+" <w:AllowedWrapping> <v:DualValue> => Instruction::Add { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), allowed_wrapping: w },
+    // TODO: fadd
+    r"sub\s+" <w:AllowedWrapping> <v:DualValue> => Instruction::Subtract { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), allowed_wrapping: w },
+    // TODO: fsub
+    r"mul\s+" <w:AllowedWrapping> <v:DualValue> => Instruction::Multiply { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), allowed_wrapping: w },
+    // TODO: fmul
+    r"udiv\s+" <e:IsExact> <v:DualValue> => Instruction::UnsignedDivide { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), is_exact: e },
+    r"sdiv\s+" <e:IsExact> <v:DualValue> => Instruction::SignedDivide { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), is_exact: e },
+    // TODO: fdiv
+    r"srem\s+" <DualValue> => Instruction::SignedRemainder { left_hand_side: <>[0].clone(), right_hand_side: <>[1].clone() },
+    r"urem\s+" <DualValue> => Instruction::UnsignedRemainder { left_hand_side: <>[0].clone(), right_hand_side: <>[1].clone() },
+    // TODO: frem
+    r"shl\s+" <w:AllowedWrapping> <v:DualValue> => Instruction::ShiftLeft { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), allowed_wrapping: w },
+    r"lshr\s+" <e:IsExact> <v:DualValue> => Instruction::LogicalShiftRight { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), is_exact: e },
+    r"ashr\s+" <e:IsExact> <v:DualValue> => Instruction::ArithmeticShiftRight { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), is_exact: e },
+    r"and\s+" <DualValue> => Instruction::And { left_hand_side: <>[0].clone(), right_hand_side: <>[1].clone() },
+    r"or\s+" <DualValue> => Instruction::Or { left_hand_side: <>[0].clone(), right_hand_side: <>[1].clone(), disjoint: false },
+    r"or\s+disjoint\s+" <DualValue> => Instruction::Or { left_hand_side: <>[0].clone(), right_hand_side: <>[1].clone(), disjoint: true },
+    r"xor\s+" <DualValue> => Instruction::ExclusiveOr { left_hand_side: <>[0].clone(), right_hand_side: <>[1].clone() },
+    // TODO: extractelement, insertelement, shufflevector
+    r"extractvalue\s+" <a:Value> "," <l:ConstantIndexList> => Instruction::ExtractValue { aggregate: a, indices: l },
+    r"insertvalue\s+" <a:Value> "," <v:Value> "," <l:ConstantIndexList> => Instruction::InsertValue { aggregate: a, value: v, indices: l },
+    r"alloca\s+" <t:Type> <n:OptionalNumElements> <a:OptionalAlignment> <s:OptionalAddressSpace> =>
+        Instruction::StackAllocate { can_reuse: false, value_type: t, num_elements: n, alignment: a, address_space: s },
+    r"alloca\s+inalloca\s+" <t:Type> <n:OptionalNumElements> <a:OptionalAlignment> <s:OptionalAddressSpace> =>
+        Instruction::StackAllocate { can_reuse: true, value_type: t, num_elements: n, alignment: a, address_space: s },
+    // TODO: load metadata
+    r"load\s+" <v:OptionalVolatile> <t:Type> "," <p:Value> <a:OptionalAlignment> => Instruction::Load { is_volatile: v, result_type: t, pointer: p, alignment: a },
+    r"load\s+atomic\s+" <v:OptionalVolatile> <t:Type> "," <p:Value> <s:OptionalSyncScope> <o:Ordering> "," <a:Alignment> =>
+        Instruction::AtomicLoad { is_volatile: v, result_type: t, pointer: p, ordering: o, sync_scope: s, alignment: a },
+    r"store\s+" <vo:OptionalVolatile> <v:Value> "," <p:Value> <a:OptionalAlignment> => Instruction::Store { is_volatile: vo, value: v, pointer: p, alignment: a },
+    r"store\s+atomic\s+" <vo:OptionalVolatile> <v:Value> "," <p:Value> <s:OptionalSyncScope> <o:Ordering> "," <a:Alignment> =>
+        Instruction::AtomicStore { is_volatile: vo, value: v, pointer: p, ordering: o, sync_scope: s, alignment: a },
+    r"fence\s+" <s:OptionalSyncScope> <o:Ordering> => Instruction::Fence { sync_scope: s, ordering: o },
+    // TODO: cmpxchg, atomicrmw
+    r"getelementptr\s+" <k:GetPointerKind> <t:Type> "," <mut l:ValueList> => Instruction::GetElementPointer { kind: k, pointer_type: t, pointer: l.remove(0), indices: l },
+    r"trunc\s+" <w:AllowedWrapping> <v:Value> r"\s+to\s+" <t:Type>  => Instruction::Truncate { allowed_wrapping: w, value: v, new_type: t },
+    r"zext\s+" <v:Value> r"\s+to\s+" <t:Type>  => Instruction::ZeroExtend { value: v, new_type: t },
+    r"sext\s+" <v:Value> r"\s+to\s+" <t:Type>  => Instruction::SignExtend { value: v, new_type: t },
+    // TODO: fptrunc, fpext, fptoui, uitofp, sitofp
+    r"ptrtoint\s+" <v:Value> r"\s+to\s+" <t:Type>  => Instruction::PointerToInteger { value: v, new_type: t },
+    r"inttoptr\s+" <v:Value> r"\s+to\s+" <t:Type>  => Instruction::IntegerToPointer { value: v, new_type: t },
+    r"bitcast\s+" <v:Value> r"\s+to\s+" <t:Type>  => Instruction::BitCast { value: v, new_type: t },
+    r"addrspacecast\s+" <v:Value> r"\s+to\s+" <t:Type> => Instruction::AddressSpaceCast { value: v, new_type: t },
+    r"icmp\s+" <c:IntegerComparison> r"\s+" <v:DualValue> => Instruction::CompareIntegers { comparison: c, left_hand_side: v[0].clone(), right_hand_side: v[1].clone() },
+    // TODO: fcmp, phi
+    // TODO: fast-math flags
+    r"select\s+" <c:Value> "," <t:Value> "," <f:Value> => Instruction::Select { condition: c, true_value: t, false_value: f },
+    r"freeze\s+" <Value> => Instruction::Freeze { value: <> },
+    // TODO: fast-math flags, calling conventions, function attributes
+    <h:TailCallHint> r"call\s+" <a:OptionalParameterAttributes> <s:OptionalAddressSpace2> <t:Type> <p:Identifier> "(" <l:ValueList> ")" =>
+        Instruction::Call { tail_call_hint: h, calling_convention: None, return_value_attributes: a, address_space: s, function_type: t, function_name: p, function_arguments: l },
+    // TODO: va_arg, landingpad, catchpad, cleanuppad
+};

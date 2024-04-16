@@ -1,7 +1,9 @@
 use lalrpop_util::lalrpop_mod;
 
 lalrpop_mod!(pub grammar, "/llvm/grammar.rs");
-pub mod ir;
+
+/// because lalrpop is broken
+type DualValue = [std::sync::Arc<crate::ir::Value>; 2];
 
 pub fn parse_escape_sequences(s: &str) -> String {
     // TODO
