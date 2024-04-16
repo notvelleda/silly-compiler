@@ -7,6 +7,15 @@ pub struct AllowedWrapping {
     pub can_wrap_signed: bool,
 }
 
+impl Default for AllowedWrapping {
+    fn default() -> Self {
+        Self {
+            can_wrap_unsigned: true,
+            can_wrap_signed: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     /// add
@@ -171,8 +180,9 @@ pub enum Instruction {
     // TODO: va_arg, landingpad, catchpad, cleanuppad
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub enum GetPointerKind {
+    #[default]
     Regular,
     InBounds,
     InRange(usize, usize),
@@ -204,8 +214,9 @@ pub enum IntegerComparison {
     SignedLessOrEqual,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub enum TailCallHint {
+    #[default]
     Indifferent,
     ShouldTail,
     MustTail,
@@ -296,12 +307,14 @@ impl Constant {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SwitchDestination {
     pub value: Arc<Value>,
     pub destination: Arc<Value>,
 }
 
 /// https://llvm.org/docs/LangRef.html#terminator-instructions
+#[derive(Debug, Clone)]
 pub enum Terminator {
     Return {
         value: Arc<Value>,

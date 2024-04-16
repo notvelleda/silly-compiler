@@ -10,6 +10,19 @@ pub fn parse_escape_sequences(s: &str) -> String {
     s.to_string()
 }
 
+#[derive(Debug)]
+pub enum Operation {
+    Assignment { identifier: String, value: crate::ir::Instruction },
+    NoAssignment { instruction: crate::ir::Instruction },
+}
+
+#[derive(Debug)]
+pub struct BasicBlock {
+    pub name: Option<String>,
+    pub operations: Vec<Operation>,
+    pub terminator: crate::ir::Terminator,
+}
+
 /// simple test to ensure the examples given in the LLVM documentation are parsed correctly
 #[test]
 fn type_parsing() {
