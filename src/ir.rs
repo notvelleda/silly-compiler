@@ -177,7 +177,24 @@ pub enum Instruction {
         function_arguments: Vec<Arc<Value>>,
         // TODO: function attributes, operand bundles
     },
+    /// call asm
+    CallAssembly {
+        return_value_attributes: Vec<ParameterAttribute>,
+        call_type: Type,
+        hints: AssemblyCallHints,
+        template: String,
+        operand_constraints: String,
+        arguments: Vec<Arc<Value>>,
+    },
     // TODO: va_arg, landingpad, catchpad, cleanuppad
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub struct AssemblyCallHints {
+    pub has_other_side_effects: bool,
+    pub should_align_stack: bool,
+    pub is_intel_dialect: bool,
+    pub can_unwind: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]

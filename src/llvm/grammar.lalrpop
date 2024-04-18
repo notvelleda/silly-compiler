@@ -1,11 +1,17 @@
 use std::{str::FromStr, sync::Arc};
 use crate::{
-    ir::{AllowedWrapping, Constant, GetPointerKind, Instruction, IntegerComparison, Ordering, SwitchDestination, TailCallHint, Terminator, Value},
+    ir::{AllowedWrapping, AssemblyCallHints, Constant, GetPointerKind, Instruction, IntegerComparison, Ordering, SwitchDestination, TailCallHint, Terminator, Value},
     types::{AddressSpace, FloatingPointKind, ParameterAttribute, TargetExtensionParameter, Type},
 };
-use super::{BasicBlock, DualValue, Operation};
+use super::{BasicBlock, DualValue, Function, FunctionParameter, LinkageType, PreemptionSpecifier, Operation, Visibility};
 
 grammar;
+
+match {
+    r";[^\n]*" => { },
+    r"[\t\v\f\r ]*" => { },
+    _
+}
 
 StringLiteral: String = <s:r#"\"[^"]*\""#> => super::parse_escape_sequences(&s[1..s.len() - 1]);
 
@@ -63,7 +69,7 @@ pub Type: Type = {
     "target" "(" <n:StringLiteral> "," <l:TargetExtensionParameterList> ")" => Type::TargetExtension { name: n, parameters: l },
     "<" <n:UnsignedBase10Int> "x" <t:Type> ">" => Type::Vector { length: n, element_type: Box::new(t), is_scalable: false },
     "<" "vscale" "x" <n:UnsignedBase10Int> "x" <t:Type> ">" => Type::Vector { length: n, element_type: Box::new(t), is_scalable: true },
-    "label" => Type::Label,
+    //"label" => Type::Label,
     "token" => Type::Token,
     "metadata" => Type::Metadata,
     "[" <n:UnsignedBase10Int> "x" <t:Type> "]" => Type::Array { length: n, element_type: Box::new(t) },
@@ -72,13 +78,19 @@ pub Type: Type = {
     "opaque" => Type::OpaqueStructure,
 };
 
+AnyType: Type = {
+    Type,
+    "label" => Type::Label,
+};
+
 Constant: Constant = {
     "true" => Constant::Boolean(true),
     "false" => Constant::Boolean(false),
     // TODO: support integer constants larger than host's pointer size
     r"[0-9]+" => Constant::Integer(usize::from_str(<>).unwrap()),
     r"-[0-9]+" => Constant::Integer(isize::from_str(<>).unwrap() as usize),
-    r"u0x[0-9a-fA-F]+" => Constant::Integer(usize::from_str_radix(&<>[1..], 16).unwrap()),
+    r"u0x[0-9a-fA-F]+" => Constant::Integer(usize::from_str_radix(&<>[3..], 16).unwrap()),
+    r"s0x[0-9a-fA-F]+" => Constant::Integer(usize::from_str_radix(&<>[3..], 16).unwrap()), // would this work?
     // TODO: floating point constants
     "null" => Constant::NullPointer,
     "none" => Constant::NoneToken,
@@ -114,7 +126,7 @@ DualValue: DualValue = {
     <t:Type> <c:Constant> "," <c2:Constant> => [Value::from_type_constant(t.clone(), c).into(), Value::from_type_constant(t, c2).into()],
 };
 
-LabelValue: Arc<Value> = r"label" <Identifier> => (Value::FromIdentifier { value_type: Type::Label, identifier: <> }).into();
+LabelValue: Arc<Value> = "label" <Identifier> => (Value::FromIdentifier { value_type: Type::Label, identifier: <> }).into();
 
 ValueList: Vec<Arc<Value>> = {
     <Value> => vec![<>],
@@ -157,17 +169,17 @@ BranchDestinationList: Vec<Arc<Value>> = {
 };
 
 Terminator: Terminator = {
-    r"ret" <Value> => Terminator::Return { value: <> },
-    r"br" <c:Value> "," <t:LabelValue> "," <f:LabelValue> => Terminator::ConditionalBranch { condition: c, if_true: t, if_false: f },
-    r"br" <LabelValue> => Terminator::Branch { destination: <> },
-    r"switch" <v:Value> "," <d:LabelValue> "[" <l:SwitchDestinationList> "]" => Terminator::Switch { value: v, default_destination: d, destinations: l },
-    r"indirectbr" <a:Value> "," "[" <l:BranchDestinationList> "]" => Terminator::IndirectBranch { address: a, valid_destinations: l },
+    "ret" <Value> => Terminator::Return { value: <> },
+    "br" <c:Value> "," <t:LabelValue> "," <f:LabelValue> => Terminator::ConditionalBranch { condition: c, if_true: t, if_false: f },
+    "br" <LabelValue> => Terminator::Branch { destination: <> },
+    "switch" <v:Value> "," <d:LabelValue> "[" <l:SwitchDestinationList> "]" => Terminator::Switch { value: v, default_destination: d, destinations: l },
+    "indirectbr" <a:Value> "," "[" <l:BranchDestinationList> "]" => Terminator::IndirectBranch { address: a, valid_destinations: l },
     // TODO: invoke, callbr, resume, catchswitch, catchpad, cleanupret
     "unreachable" => Terminator::Unreachable,
 };
 
 Alignment: usize = {
-    r"align" <UnsignedBase10Int>,
+    "align" <UnsignedBase10Int>,
     "align(" <UnsignedBase10Int> ")",
 };
 
@@ -268,6 +280,13 @@ GetPointerKind: GetPointerKind = {
     "inrange(" <s:UnsignedBase10Int> "," <e:UnsignedBase10Int> ")" => GetPointerKind::InRange(s, e),
 };
 
+AssemblyCallHints: AssemblyCallHints = <s:"sideeffect"?> <a:"alignstack"?> <i:"inteldialect"?> <u:"unwind"?> => AssemblyCallHints {
+    has_other_side_effects: s.is_some(),
+    should_align_stack: a.is_some(),
+    is_intel_dialect: i.is_some(),
+    can_unwind: u.is_some(),
+};
+
 Instruction: Instruction = {
     // TODO: fneg
     "add" <w:AllowedWrapping?> <v:DualValue> => Instruction::Add { left_hand_side: v[0].clone(), right_hand_side: v[1].clone(), allowed_wrapping: w.unwrap_or_default() },
@@ -320,7 +339,7 @@ Instruction: Instruction = {
     "select" <c:Value> "," <t:Value> "," <f:Value> => Instruction::Select { condition: c, true_value: t, false_value: f },
     "freeze" <Value> => Instruction::Freeze { value: <> },
     // TODO: fast-math flags, calling conventions, function attributes
-    <h:TailCallHint?> r"call" <a:ParameterAttributeList?> <s:AddressSpace?> <t:Type> <p:Identifier> "(" <l:ValueList> ")" =>
+    <h:TailCallHint?> "call" <a:ParameterAttributeList?> <s:AddressSpace?> <t:Type> <p:Identifier> "(" <l:ValueList> ")" =>
         Instruction::Call {
             tail_call_hint: h.unwrap_or_default(),
             calling_convention: None,
@@ -329,6 +348,15 @@ Instruction: Instruction = {
             function_type: t,
             function_name: p,
             function_arguments: l,
+        },
+    "call" <a:ParameterAttributeList?> <t:Type> "asm" <h:AssemblyCallHints> <e:StringLiteral> "," <c:StringLiteral> "(" <l:ValueList> ")" =>
+        Instruction::CallAssembly {
+            return_value_attributes: a.unwrap_or_default(),
+            call_type: t,
+            hints: h,
+            template: e,
+            operand_constraints: c,
+            arguments: l,
         },
     // TODO: va_arg, landingpad, catchpad, cleanuppad
 };
@@ -340,7 +368,7 @@ Operation: Operation = {
 
 OperationList: Vec<Operation> = {
     <Operation> => vec![<>],
-    <mut l:OperationList> r"\n" <a:Operation> => {
+    <mut l:OperationList> r"\n"+ <a:Operation> => {
         l.push(a);
         l
     },
@@ -348,4 +376,85 @@ OperationList: Vec<Operation> = {
 
 BlockName: String = <s:r"\S+:\n"> => s[..s.len() - 2].to_string();
 
-pub BasicBlock: BasicBlock = <n:BlockName?> <a:OperationList?> <t:Terminator> => BasicBlock { name: n, operations: a.unwrap_or_default(), terminator: t };
+pub BasicBlock: BasicBlock = <n:BlockName?> <a:(OperationList r"\n"+)?> <t:Terminator> => BasicBlock { name: n, operations: a.map(|a| a.0).unwrap_or_default(), terminator: t };
+
+LinkageType: LinkageType = {
+    "private" => LinkageType::Private,
+    "internal" => LinkageType::Internal,
+    "available_externally" => LinkageType::AvailableExternally,
+    "linkonce" => LinkageType::LinkOnce,
+    "weak" => LinkageType::Weak,
+    "common" => LinkageType::Common,
+    "appending" => LinkageType::Appending,
+    "extern_weak" => LinkageType::ExternalWeak,
+    "linkonce_odr" => LinkageType::LinkOnceODR,
+    "weak_odr" => LinkageType::WeakODR,
+    "external" => LinkageType::External,
+};
+
+PreemptionSpecifier: PreemptionSpecifier = {
+    "dso_preemptable" => PreemptionSpecifier::Preemptable,
+    "dso_local" => PreemptionSpecifier::Local,
+};
+
+Visibility: Visibility = {
+    "default" => Visibility::Default,
+    "hidden" => Visibility::Hidden,
+    "protected" => Visibility::Protected,
+};
+
+FunctionParameter: FunctionParameter = <t:Type> <i:Identifier> => FunctionParameter { parameter_type: t, name: i };
+
+FunctionParameterList: Vec<FunctionParameter> = {
+    <FunctionParameter> => vec![<>],
+    <mut l:FunctionParameterList> "," <p:FunctionParameter> => {
+        l.push(p);
+        l
+    },
+};
+
+BasicBlockList: Vec<BasicBlock> = {
+    <BasicBlock> => vec![<>],
+    <mut l:BasicBlockList> r"\n"+ <b:BasicBlock> => {
+        l.push(b);
+        l
+    },
+};
+
+// TODO: calling convention, DLL storage class, function attributes, comdat, prefix, prologue, personality, metadata, unnamed_addr
+// this seems to either hang lalrpop or just take forever to compile for whatever reason
+/*pub Function: Function = 
+    "define" <k:LinkageType?> <p:PreemptionSpecifier?> <v:Visibility?> <a:ParameterAttributeList?> <t:Type> <n:Identifier> "(" <l:FunctionParameterList?> ")" <s:AddressSpace?>
+    <e:("section" StringLiteral)?> <r:("partition" StringLiteral)?> <i:Alignment?> <g:"gc"?> "{" r"\n"* <b:BasicBlockList> r"\n"* "}" =>
+        Function {
+            linkage: k.unwrap_or_default(),
+            preemption_specifier: p.unwrap_or_default(),
+            visibility: v.unwrap_or_default(),
+            return_type_parameter_attributes: a.unwrap_or_default(),
+            return_type: t,
+            name: n,
+            arguments: l.unwrap_or_default(),
+            address_space: s,
+            section_name: e.map(|e| e.1),
+            partition_name: r.map(|r| r.1),
+            alignment: i,
+            is_garbage_collected: g.is_some(),
+            basic_blocks: b,
+        };*/
+
+pub Function: Function = "define" <t:Type> <n:Identifier> "(" <l:FunctionParameterList?> ")" "{" r"\n"* <b:BasicBlockList> r"\n"* "}" =>
+    Function {
+        linkage: Default::default(),
+        preemption_specifier: Default::default(),
+        visibility: Default::default(),
+        return_type_parameter_attributes: Default::default(),
+        return_type: t,
+        name: n,
+        arguments: l.unwrap_or_default(),
+        address_space: None,
+        section_name: None,
+        partition_name: None,
+        alignment: None,
+        is_garbage_collected: false,
+        basic_blocks: b,
+    };
